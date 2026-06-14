@@ -89,12 +89,19 @@ android {
         disable 'MissingTranslation', 'InvalidPackage', 'ObsoleteLintCustomCheck', 'DefaultLocale', 'UnusedAttribute', 'VectorRaster', 'InflateParams', 'IconLocation', 'UnusedResources', 'TypographyEllipsis'
     }
 
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
+
 }
 
 dependencies {
     // Testing
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.assertj:assertj-core:3.13.1'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
 
     // Android standard libs
     implementation "androidx.multidex:multidex:2.0.1"
