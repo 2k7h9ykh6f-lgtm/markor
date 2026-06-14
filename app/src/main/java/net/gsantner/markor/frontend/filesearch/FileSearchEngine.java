@@ -13,31 +13,23 @@ import androidx.annotation.Nullable;
 import com.google.android.material.snackbar.Snackbar;
 
 import net.gsantner.markor.R;
-import net.gsantner.opoc.util.GsCollectionUtils;
 import net.gsantner.opoc.util.GsFileUtils;
 import net.gsantner.opoc.wrapper.GsCallback;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import other.de.stanetz.jpencconverter.JavaPasswordbasedCryption;
 
@@ -48,7 +40,6 @@ public class FileSearchEngine {
     public static final AtomicReference<WeakReference<Activity>> activity = new AtomicReference<>();
 
     private static final List<String> defaultIgnoredDirs = Arrays.asList("^\\.git$", "^\\.tmp$", ".*[Tt]humb.*");
-    private static final int maxPreviewLength = 100;
     public static final int maxQueryHistoryCount = 20;
     public static final LinkedList<String> queryHistory = new LinkedList<>();
 
@@ -119,30 +110,23 @@ public class FileSearchEngine {
     public static class QueueSearchFilesTask extends AsyncTask<Void, Integer, List<FitFile>> {
         private final SearchOptions _config;
         private final GsCallback.a1<List<FitFile>> _callback;
-
-        // _matcher.reset() is _not_ thread safe. Will need alternate approach when we make search parallel
-        private final Matcher _matcher;
+        private final FileSearchCore _core;
+        private final boolean _regexValid;
 
         private Snackbar _snackBar;
-        private Integer _countCheckedFiles = 0;
         private final List<FitFile> _result = new ArrayList<>();
-        private final Set<Matcher> _ignoredRegexDirs = new HashSet<>();
-        private final Set<String> _ignoredExactDirs = new HashSet<>();
 
         public QueueSearchFilesTask(final SearchOptions config, final GsCallback.a1<List<FitFile>> callback) {
             _config = config;
             _callback = callback;
+            _core = new FileSearchCore();
 
-            _config.query = _config.isCaseSensitiveQuery ? _config.query : _config.query.toLowerCase();
-            splitRegexExactFiles(config.ignoredDirectories, _ignoredExactDirs, _ignoredRegexDirs);
-            splitRegexExactFiles(FileSearchEngine.defaultIgnoredDirs, _ignoredExactDirs, _ignoredRegexDirs);
-
-            Pattern pattern = null;
+            // Validate regex pattern upfront
+            boolean regexOk = true;
             if (_config.isRegexQuery) {
-                try {
-                    _config.query = _config.query.replaceAll("(?<![.])[*]", ".*");
-                    pattern = Pattern.compile(_config.query);
-                } catch (Exception ex) {
+                String query = _config.isCaseSensitiveQuery ? _config.query : _config.query.toLowerCase();
+                if (_core.compileRegex(query) == null) {
+                    regexOk = false;
                     final Activity a = activity.get().get();
                     if (a != null) {
                         final String errorMessage = a.getString(R.string.regex_can_not_be_compiled) + ": " + _config.query;
@@ -150,13 +134,13 @@ public class FileSearchEngine {
                     }
                 }
             }
-            _matcher = pattern != null ? pattern.matcher("") : null;
+            _regexValid = regexOk;
         }
 
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
-            if (_config.isRegexQuery && _matcher == null) {
+            if (_config.isRegexQuery && !_regexValid) {
                 cancel(true);
                 return;
             }
@@ -191,80 +175,43 @@ public class FileSearchEngine {
 
         @Override
         protected List<FitFile> doInBackground(final Void... ignored) {
-            final ArrayDeque<Pair<File, Integer>> stack = new ArrayDeque<>();
-            stack.add(Pair.create(_config.rootSearchDir, 0));
-            final int trimLength = _config.rootSearchDir.getAbsolutePath().length() + 1;
-
-            Pair<File, Integer> pair;
-            while ((pair = stack.pollLast()) != null && !isCancelled()) {
-                final int depth = pair.second;
-                final File dir = pair.first;
-
-                if (depth < _config.maxSearchDepth && dir.canRead()) {
-                    handleDirectory(dir, trimLength, depth, stack::addLast);
-                    publishProgress(stack.size(), depth, _result.size(), _countCheckedFiles);
-                }
+            if (_config.isRegexQuery && !_regexValid) {
+                return _result;
             }
 
-            GsCollectionUtils.keySort(_result, f -> f.relPath.toLowerCase());
+            List<FileSearchCore.Match> matches = _core.search(
+                    _config.rootSearchDir,
+                    _config.query,
+                    _config.isRegexQuery,
+                    _config.isCaseSensitiveQuery,
+                    _config.isSearchInContent,
+                    _config.isOnlyFirstContentMatch,
+                    _config.maxSearchDepth,
+                    _config.ignoredDirectories,
+                    _config.isShowMatchPreview
+            );
+
+            for (FileSearchCore.Match m : matches) {
+                if (isCancelled()) break;
+
+                List<Pair<String, Integer>> children = null;
+                if (!m.children.isEmpty()) {
+                    children = new ArrayList<>();
+                    for (FileSearchCore.MatchPair mp : m.children) {
+                        children.add(new Pair<>(mp.first, mp.second));
+                    }
+                }
+                _result.add(new FitFile(m.file, m.relPath, m.isDirectory, children));
+            }
 
             return _result;
-        }
-
-        private void handleDirectory(
-                final File dir,
-                final int trimSize,
-                final int depth,
-                final GsCallback.a1<Pair<File, Integer>> pushToStack
-        ) {
-
-            final File[] files = dir.listFiles();
-
-            if (files == null) {
-                return;
-            }
-
-            _countCheckedFiles += files.length;
-
-            for (final File file : files) {
-
-                if (isCancelled()) {
-                    return;
-                }
-
-                final String name = _config.isCaseSensitiveQuery ? file.getName() : file.getName().toLowerCase();
-
-                if (!isIgnored(name)) {
-
-                    final boolean isDir = file.isDirectory();
-                    final String relPath = file.getAbsolutePath().substring(trimSize);
-
-                    final int beforeContentCount = _result.size();
-                    if (_config.isSearchInContent && !isDir && file.canRead() && GsFileUtils.isTextFile(file)) {
-                        getContentMatches(file, relPath, _config.isOnlyFirstContentMatch);
-                    }
-
-                    // Search name if directory or not already included due to content
-                    if (isDir || _result.size() == beforeContentCount) {
-                        if (_config.isRegexQuery ? _matcher.reset(name).matches() : name.contains(_config.query)) {
-                            _result.add(new FitFile(file, relPath, isDir, null));
-                        }
-                    }
-
-                    // Only check for symbolic link directories
-                    if (isDir && depth < _config.maxSearchDepth && !GsFileUtils.isSymbolicLink(file)) {
-                        pushToStack.callback(Pair.create(file, depth + 1));
-                    }
-                }
-            }
         }
 
         @Override
         protected void onProgressUpdate(Integer... values) {
             super.onProgressUpdate(values);
             if (_snackBar != null) {
-                // _currentQueueLength, _currentSearchDepth, _result.size(), _countCheckedFiles
-                _snackBar.setText("⭕" + values[2] + " || \uD83D\uDD0D" + values[0] + " || ⬇️ " + values[1] + " || \uD83D\uDC41️" + values[3] + "\n" + _config.query);
+                _snackBar.setText("\u2b55" + _result.size() + " || \uD83D\uDD0D" + _config.query);
             }
         }
 
@@ -287,117 +234,6 @@ public class FileSearchEngine {
         protected void onCancelled() {
             super.onCancelled();
             FileSearchEngine.isSearchExecuting.set(false);
-        }
-
-        private void splitRegexExactFiles(final List<String> list, final Set<String> exactList, final Set<Matcher> regexList) {
-            for (String pattern : (list != null ? list : new ArrayList<String>())) {
-                if (pattern.isEmpty()) {
-                    continue;
-                }
-                if (!_config.isCaseSensitiveQuery) {
-                    pattern = pattern.toLowerCase();
-                }
-
-                if (pattern.startsWith("\"")) {
-                    pattern = pattern.replace("\"", "");
-                    if (pattern.isEmpty()) {
-                        continue;
-                    }
-                    exactList.add(pattern);
-                } else {
-                    pattern = pattern.replaceAll("(?<![.])[*]", ".*");
-                    try {
-                        regexList.add(Pattern.compile(pattern).matcher(""));
-                    } catch (Exception ex) {
-                        final Activity a = activity.get().get();
-                        if (a != null) {
-                            final String errorMessage = a.getString(R.string.regex_can_not_be_compiled) + ": " + pattern;
-                            Toast.makeText(a, errorMessage, Toast.LENGTH_LONG).show();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Match line and return preview string. Preview will be null if no match found
-        private String matchLine(final String line) {
-            final String preparedLine = _config.isCaseSensitiveQuery ? line : line.toLowerCase();
-
-            int start = -1, end = -1;
-            if (_config.isRegexQuery) {
-                if (_matcher.reset(preparedLine).find()) {
-                    start = _matcher.start();
-                    end = _matcher.end();
-                }
-            } else {
-                start = preparedLine.indexOf(_config.query);
-                if (start >= 0) {
-                    end = start + _config.query.length();
-                }
-            }
-
-            // Preview is based on original line
-            if (start >= 0 && end <= line.length()) {
-                if (!_config.isShowMatchPreview) {
-                    return "";
-                }
-                if (line.length() < maxPreviewLength) {
-                    return line;
-                } else {
-                    int offset = (maxPreviewLength - (end - start)) / 2;
-                    int subStart = Math.max(start - offset, 0);
-                    int subEnd = Math.min(end + offset, line.length());
-                    return String.format("… %s …", line.substring(subStart, subEnd));
-                }
-            }
-            return null;
-        }
-
-        private void getContentMatches(final File file, final String relPath, final boolean isFirstMatchOnly) {
-            List<Pair<String, Integer>> contentMatches = null;
-
-            try (final BufferedReader br = new BufferedReader(new InputStreamReader(getInputStream(file)))) {
-                int lineNumber = 0;
-                for (String line; (line = br.readLine()) != null; ) {
-                    if (isCancelled()) {
-                        break;
-                    }
-                    line = matchLine(line);
-                    if (line != null) {
-
-                        // We lazily create the match list
-                        // And therefore avoid creating it for _every_ file
-                        if (contentMatches == null) {
-                            contentMatches = new ArrayList<>();
-                            _result.add(new FitFile(file, relPath, false, contentMatches));
-                        }
-
-                        // Note that content matches is only created on the first find
-                        contentMatches.add(new Pair<>(line, lineNumber));
-
-                        if (isFirstMatchOnly) {
-                            break;
-                        }
-                    }
-                    lineNumber++;
-                }
-            } catch (Exception ignored) {
-            }
-        }
-
-        private boolean isIgnored(final String dirName) {
-            for (final String pattern : _ignoredExactDirs) {
-                if (dirName.equals(pattern)) {
-                    return true;
-                }
-            }
-
-            for (final Matcher matcher : _ignoredRegexDirs) {
-                if (matcher.reset(dirName).matches()) {
-                    return true;
-                }
-            }
-            return false;
         }
 
         private InputStream getInputStream(File file) throws FileNotFoundException {
