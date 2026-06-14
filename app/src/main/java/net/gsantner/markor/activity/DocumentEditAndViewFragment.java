@@ -181,12 +181,15 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
 
         // Preview mode set before loadDocument to prevent flicker
         final Bundle args = getArguments();
-        final boolean startInPreview = _appSettings.getDocumentPreviewState(_document.path);
-        if (args != null && savedInstanceState == null) { // Use the launch flag on first launch
-            setViewModeVisibility(args.getBoolean(START_PREVIEW, startInPreview), false);
-        } else {
-            setViewModeVisibility(startInPreview, false);
-        }
+        final boolean persistedPreview = _appSettings.getDocumentPreviewState(_document.path);
+        final boolean hasArgs = args != null;
+        final boolean previewVisible = DocumentEditAndViewLogic.resolvePreviewVisible(
+                hasArgs,
+                savedInstanceState == null, // first launch when no saved instance state
+                hasArgs && args.containsKey(START_PREVIEW),
+                hasArgs && args.getBoolean(START_PREVIEW, persistedPreview),
+                persistedPreview);
+        setViewModeVisibility(previewVisible, false);
 
         // Configure the editor
         // ---------------------------------------------------------
@@ -251,13 +254,10 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
     protected void onFragmentFirstTimeVisible() {
         final Bundle args = getArguments();
         final boolean hasLineNumber = args != null && args.containsKey(Document.EXTRA_FILE_LINE_NUMBER);
-        int startPos = _appSettings.getLastEditPosition(_document.path, _hlEditor.length());
-        if (hasLineNumber) {
-            final int lineNumber = args.getInt(Document.EXTRA_FILE_LINE_NUMBER);
-            startPos = lineNumber >= 0
-                    ? TextViewUtils.getIndexFromLineOffset(_hlEditor.getText(), lineNumber, 0)
-                    : _hlEditor.length();
-        } else {
+        final int lineNumber = hasLineNumber ? args.getInt(Document.EXTRA_FILE_LINE_NUMBER) : -1;
+        final int lastEditPos = _appSettings.getLastEditPosition(_document.path, _hlEditor.length());
+        final int startPos = DocumentEditAndViewLogic.getStartCursorPosition(_hlEditor.getText(), hasLineNumber, lineNumber, lastEditPos);
+        if (!hasLineNumber) {
             _hlEditor.setSelection(startPos);
         }
 
@@ -475,7 +475,8 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
                 return false;
             }
 
-            if (!_document.isContentSame(_hlEditor.getText())) {
+            // We are inside the file-changed branch; only overwrite if the editor doesn't already match.
+            if (DocumentEditAndViewLogic.shouldReplaceEditorText(true, _document.isContentSame(_hlEditor.getText()))) {
                 _hlEditor.withAutoFormatDisabled(() -> _hlEditor.setTextKeepState(content));
             }
 
@@ -1116,22 +1117,26 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
 
         // Document is written iff writable && content has changed
         final CharSequence text = _hlEditor.getText();
-        if (!_document.isContentSame(text)) {
-            final int minLength = GsContextUtils.TEXT_FILE_OVERWRITE_MIN_TEXT_LENGTH;
-            if (!forceSaveEmpty && text != null && text.length() < minLength) {
+        final int minLength = GsContextUtils.TEXT_FILE_OVERWRITE_MIN_TEXT_LENGTH;
+        final int textLength = text != null ? text.length() : 0;
+        switch (DocumentEditAndViewLogic.getSaveAction(_document.isContentSame(text), forceSaveEmpty, textLength, minLength)) {
+            case BLOCKED_TOO_SHORT: {
                 final String message = activity.getString(R.string.wont_save_min_length, minLength);
                 Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
                 return true;
             }
-            if (_document.saveContent(getActivity(), text, _cu, forceSaveEmpty)) {
-                checkTextChangeState();
-                return true;
-            } else {
-                errorClipText();
-                return false; // Failure only if saveContent somehow fails
+            case WRITE: {
+                if (_document.saveContent(getActivity(), text, _cu, forceSaveEmpty)) {
+                    checkTextChangeState();
+                    return true;
+                } else {
+                    errorClipText();
+                    return false; // Failure only if saveContent somehow fails
+                }
             }
-        } else {
-            return true; // Report success if text not changed
+            case NOTHING_TO_SAVE:
+            default:
+                return true; // Report success if text not changed
         }
     }
 
