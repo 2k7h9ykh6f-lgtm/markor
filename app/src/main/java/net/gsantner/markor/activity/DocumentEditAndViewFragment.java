@@ -251,13 +251,13 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
     protected void onFragmentFirstTimeVisible() {
         final Bundle args = getArguments();
         final boolean hasLineNumber = args != null && args.containsKey(Document.EXTRA_FILE_LINE_NUMBER);
-        int startPos = _appSettings.getLastEditPosition(_document.path, _hlEditor.length());
-        if (hasLineNumber) {
-            final int lineNumber = args.getInt(Document.EXTRA_FILE_LINE_NUMBER);
-            startPos = lineNumber >= 0
-                    ? TextViewUtils.getIndexFromLineOffset(_hlEditor.getText(), lineNumber, 0)
-                    : _hlEditor.length();
-        } else {
+        final int lineNumber = hasLineNumber ? args.getInt(Document.EXTRA_FILE_LINE_NUMBER) : 0;
+        final int lastEditPosition = _appSettings.getLastEditPosition(_document.path, _hlEditor.length());
+        final int computedStart = DocumentEditHelper.computeStartPosition(hasLineNumber, lineNumber, lastEditPosition, _hlEditor.length());
+        int startPos = (computedStart == -1)
+                ? TextViewUtils.getIndexFromLineOffset(_hlEditor.getText(), lineNumber, 0)
+                : computedStart;
+        if (!hasLineNumber) {
             _hlEditor.setSelection(startPos);
         }
 
@@ -265,7 +265,7 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
         if (_webView != null) {
             int lastViewHeight = _appSettings.getLastViewHeight(_document.path, 0);
             int lastViewScrollY = _appSettings.getLastViewScrollY(_document.path, 0);
-            if (lastViewScrollY > 0 && lastViewHeight == _webView.getHeight()) {
+            if (DocumentEditHelper.shouldRestoreViewScroll(lastViewHeight, _webView.getHeight(), lastViewScrollY)) {
                 _verticalScrollView.post(() -> _webView.scrollTo(0, lastViewScrollY));
             }
         }
@@ -278,7 +278,7 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
             final int lastEditScrollY = _appSettings.getLastEditScrollY(_document.path, 0);
             final int fallbackPos = startPos;
             _verticalScrollView.post(() -> {
-                if (lastEditHeight > 0 && lastEditHeight == _verticalScrollView.getHeight()) {
+                if (DocumentEditHelper.shouldRestoreScroll(lastEditHeight, _verticalScrollView.getHeight(), lastEditScrollY)) {
                     _verticalScrollView.scrollTo(0, lastEditScrollY);
                 } else {
                     TextViewUtils.setSelectionAndShow(_hlEditor, fallbackPos);
@@ -960,11 +960,7 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
         }
         _webView.setFindListener((activeMatchOrdinal, numberOfMatches, isDoneCounting) -> {
             if (isDoneCounting) {
-                String searchResult = "";
-                if (numberOfMatches > 0) {
-                    searchResult = (activeMatchOrdinal + 1) + "/" + numberOfMatches;
-                }
-                _searchResultTextView.setText(searchResult);
+                _searchResultTextView.setText(DocumentEditHelper.formatSearchResult(activeMatchOrdinal, numberOfMatches, true));
             }
         });
     }
@@ -1118,7 +1114,7 @@ public class DocumentEditAndViewFragment extends MarkorBaseFragment implements F
         final CharSequence text = _hlEditor.getText();
         if (!_document.isContentSame(text)) {
             final int minLength = GsContextUtils.TEXT_FILE_OVERWRITE_MIN_TEXT_LENGTH;
-            if (!forceSaveEmpty && text != null && text.length() < minLength) {
+            if (DocumentEditHelper.shouldBlockSave(text != null ? text.length() : 0, minLength, forceSaveEmpty)) {
                 final String message = activity.getString(R.string.wont_save_min_length, minLength);
                 Toast.makeText(activity, message, Toast.LENGTH_SHORT).show();
                 return true;
