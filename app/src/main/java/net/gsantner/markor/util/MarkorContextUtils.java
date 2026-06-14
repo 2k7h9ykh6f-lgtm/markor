@@ -98,20 +98,17 @@ public class MarkorContextUtils extends GsContextUtils {
             return null;
         }
 
-        // By extra path
-        File file = (File) intent.getSerializableExtra(Document.EXTRA_FILE);
+        // By extra path (Step 1 – direct serializable extra)
+        File file = IntentFileResolver.fromExtraFile(intent);
 
-        // By stream etc
+        // By stream etc (Step 2 – complex content:// extraction via GsContextUtils)
         if (file == null && context != null) {
             file = GsContextUtils.extractFileFromIntent(intent, context);
         }
 
-        // By url in data
+        // By url in data (Step 3 – raw URI path fallback)
         if (file == null) {
-            try {
-                file = new File(intent.getData().getPath());
-            } catch (NullPointerException ignored) {
-            }
+            file = IntentFileResolver.fromRawPath(intent);
         }
 
         return file;

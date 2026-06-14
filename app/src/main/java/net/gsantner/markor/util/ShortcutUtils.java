@@ -121,7 +121,7 @@ public class ShortcutUtils {
      * @param input Input text
      * @return Truncated input text
      */
-    private static String createShortLabel(String input) {
+    /* package-private for testing */ static String createShortLabel(String input) {
         return (input.length() > 10) ? input.substring(0, 7) + "..." : input;
     }
 
@@ -131,7 +131,7 @@ public class ShortcutUtils {
      * @param input Input text
      * @return Truncated input text
      */
-    private static String createLongLabel(String input) {
+    /* package-private for testing */ static String createLongLabel(String input) {
         return (input.length() > 25) ? input.substring(0, 22) + "..." : input;
     }
 }

@@ -639,27 +639,12 @@ public class DocumentShareIntoFragment extends MarkorBaseFragment {
     }
 
     private static String sanitize(final String link) {
-        String dropGetParams = "utm_|source|si|__mk_|ref|sprefix|crid|partner|promo|ad_sub|gclid|fbclid|msclkid|dib";
-        if (link.contains("amazon.")) {
-            dropGetParams += "|qid|sr";
-        }
-
-        return link.replaceAll("(?m)(?<=&|\\?)(" + dropGetParams + ").*?(&|$|\\s|\\))", "");
+        return net.gsantner.markor.util.ShareIntoLogic.sanitizeUrl(link);
     }
 
     private static String extractShareText(final Intent intent) {
-        String title = intent.getStringExtra(Intent.EXTRA_SUBJECT);
-        if (title != null) {
-            title = title.trim() + " ";
-        }
-
-        String link = intent.getStringExtra(Intent.EXTRA_TEXT);
-        link = link != null ? link.trim() : "";
-
-        if (Patterns.WEB_URL.matcher(link).matches()) {
-            link = (title != null ? title : "") + sanitize(link);
-        }
-
-        return link;
+        return net.gsantner.markor.util.ShareIntoLogic.extractShareText(
+                intent.getStringExtra(Intent.EXTRA_SUBJECT),
+                intent.getStringExtra(Intent.EXTRA_TEXT));
     }
 }
